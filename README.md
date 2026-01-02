@@ -11,6 +11,8 @@ HTTP_LISTEN_ADDR=:8080
 MQTT_BROKER=tcp://mosquitto:1883
 MQTT_TOPIC=homelab/health
 MQTT_CLIENT_ID=alertmanager-mqtt-bridge
+MQTT_USERNAME=your-user
+MQTT_PASSWORD=your-pass
 ```
 
 ## HTTP

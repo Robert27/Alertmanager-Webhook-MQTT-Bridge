@@ -21,18 +21,30 @@
           vendorHash = "sha256-MI4E/GD3ExJgOKLzgK8+8YuCAxwZHI/GVOsL1rhsG9c=";
         };
 
+        # The actual binary name (Go uses directory/module name)
+        binaryName = "Alertmanager-Webhook-MQTT-Bridge";
+
+        # Create a package that has the binary in /bin
+        appPackage = pkgs.runCommand "${name}-app" {} ''
+          mkdir -p $out/bin
+          cp ${goBuild}/bin/${binaryName} $out/bin/${binaryName}
+          chmod +x $out/bin/${binaryName}
+        '';
+
         dockerImage = pkgs.dockerTools.buildImage {
           name = name;
           tag = "latest";
-          copyToRoot = [
-            pkgs.cacert
-            (pkgs.writeScriptBin "entrypoint.sh" ''
-              #!${pkgs.bash}/bin/bash
-              exec "${goBuild}/bin/${name}" "$@"
-            '')
-          ];
+          copyToRoot = pkgs.buildEnv {
+            name = "image-root";
+            paths = [
+              pkgs.cacert
+              appPackage
+              pkgs.bash
+            ];
+            pathsToLink = [ "/bin" "/etc" ];
+          };
           config = {
-            Entrypoint = [ "/bin/entrypoint.sh" ];
+            Entrypoint = [ "/bin/${binaryName}" ];
             ExposedPorts = { "8080/tcp" = { }; };
             WorkingDir = "/";
             Env = [
