@@ -17,7 +17,7 @@ env:
 jobs:
   build-and-deploy:
     name: Build and Deploy Docker Image (${{ matrix.arch }})
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -26,8 +26,10 @@ jobs:
         include:
           - system: x86_64-linux
             arch: amd64
+            runner: ubuntu-24.04
           - system: aarch64-linux
             arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
@@ -47,17 +49,10 @@ jobs:
             /nix/var/nix/gcroots
             /nix/var/nix/profiles
             /nix/var/nix/temproots
-          key: nix-${{ runner.os }}-2.21.0-${{ hashFiles('flake.lock') }}
+          key: nix-${{ runner.os }}-${{ matrix.arch }}-2.21.0-${{ hashFiles('flake.lock') }}
           restore-keys: |
-            nix-${{ runner.os }}-2.21.0-
-            nix-${{ runner.os }}-
-
-      - name: Install qemu-user-static
-        if: ${{ matrix.arch == 'arm64' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-user-static binfmt-support
-          sudo update-binfmts --enable qemu-aarch64
+            nix-${{ runner.os }}-${{ matrix.arch }}-2.21.0-
+            nix-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Install skopeo
         run: |
@@ -70,11 +65,7 @@ jobs:
 
       - name: Build Docker image
         run: |
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
-            nix build --extra-platforms aarch64-linux ".#packages.${{ matrix.system }}.dockerImage" --out-link result-${{ matrix.arch }}
-          else
-            nix build ".#packages.${{ matrix.system }}.dockerImage" --out-link result-${{ matrix.arch }}
-          fi
+          nix build ".#packages.${{ matrix.system }}.dockerImage" --out-link result-${{ matrix.arch }}
 
       - id: repository
         name: Generate Registry String
