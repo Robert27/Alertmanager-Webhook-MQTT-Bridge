@@ -5,7 +5,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -16,8 +18,9 @@ type webhookPayload struct {
 }
 
 type alert struct {
-	Status string            `json:"status"`
-	Labels map[string]string `json:"labels"`
+	Status      string            `json:"status"`
+	Labels      map[string]string `json:"labels"`
+	Fingerprint string            `json:"fingerprint"`
 }
 
 type mqttMessage struct {
@@ -33,6 +36,17 @@ var severityRank = map[string]int{
 	"error":    3,
 	"critical": 4,
 }
+
+// activeAlerts tracks all currently firing alerts by fingerprint
+type activeAlert struct {
+	Fingerprint string
+	Severity    string
+}
+
+var (
+	activeAlertsMap = make(map[string]activeAlert)
+	alertsMutex     sync.RWMutex
+)
 
 func main() {
 	listenAddr := getEnv("HTTP_LISTEN_ADDR", ":8080")
@@ -99,8 +113,13 @@ func main() {
 		}
 
 		log.Printf("processing webhook: %d alerts received", len(payload.Alerts))
-		state, active := highestSeverity(payload.Alerts)
-		log.Printf("calculated state: %s (%d active alerts)", state, active)
+		
+		// Update active alerts map based on this webhook
+		updateActiveAlerts(payload.Alerts)
+		
+		// Calculate state from all active alerts across all groups
+		state, active := calculateOverallState()
+		log.Printf("calculated overall state: %s (%d active alerts across all groups)", state, active)
 		
 		if err := publishState(client, topic, state, active); err != nil {
 			log.Printf("mqtt publish failed: %v", err)
@@ -160,37 +179,84 @@ func connectMQTT(broker, clientID, username, password string) mqtt.Client {
 	return client
 }
 
-func highestSeverity(alerts []alert) (string, int) {
-	active := 0
-	highest := ""
-	highestRank := -1
+// updateActiveAlerts processes a webhook payload and updates the global active alerts map
+func updateActiveAlerts(alerts []alert) {
+	alertsMutex.Lock()
+	defer alertsMutex.Unlock()
 
 	for _, a := range alerts {
-		if a.Status != "firing" {
-			continue
+		fingerprint := a.Fingerprint
+		if fingerprint == "" {
+			// Fallback: generate a simple fingerprint from labels if not provided
+			// This shouldn't happen with Alertmanager v2+, but handle it gracefully
+			log.Printf("warning: alert missing fingerprint, generating from labels")
+			fingerprint = generateFingerprint(a.Labels)
 		}
-		active++
-		severity := "info"
-		if a.Labels != nil {
-			if s := strings.ToLower(strings.TrimSpace(a.Labels["severity"])); s != "" {
-				severity = s
+
+		if a.Status == "firing" {
+			// Extract severity from labels
+			severity := "info"
+			if a.Labels != nil {
+				if s := strings.ToLower(strings.TrimSpace(a.Labels["severity"])); s != "" {
+					severity = s
+				}
 			}
+			activeAlertsMap[fingerprint] = activeAlert{
+				Fingerprint: fingerprint,
+				Severity:    severity,
+			}
+			log.Printf("alert added/updated: fingerprint=%s, severity=%s", fingerprint, severity)
+		} else if a.Status == "resolved" {
+			delete(activeAlertsMap, fingerprint)
+			log.Printf("alert resolved: fingerprint=%s", fingerprint)
 		}
-		rank, ok := severityRank[severity]
+	}
+}
+
+// generateFingerprint creates a simple fingerprint from labels (fallback)
+// This is deterministic by sorting keys
+func generateFingerprint(labels map[string]string) string {
+	if len(labels) == 0 {
+		return "unknown"
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, k := range keys {
+		parts = append(parts, k+"="+labels[k])
+	}
+	return strings.Join(parts, ",")
+}
+
+// calculateOverallState calculates the highest severity from all active alerts
+func calculateOverallState() (string, int) {
+	alertsMutex.RLock()
+	defer alertsMutex.RUnlock()
+
+	if len(activeAlertsMap) == 0 {
+		return "NONE", 0
+	}
+
+	highest := ""
+	highestRank := -1
+	activeCount := 0
+
+	for _, alert := range activeAlertsMap {
+		activeCount++
+		rank, ok := severityRank[alert.Severity]
 		if !ok {
 			rank = severityRank["info"]
 		}
 		if rank > highestRank {
 			highestRank = rank
-			highest = severity
+			highest = alert.Severity
 		}
 	}
 
-	if active == 0 {
-		return "NONE", active
-	}
-
-	return strings.ToUpper(highest), active
+	return strings.ToUpper(highest), activeCount
 }
 
 func publishState(client mqtt.Client, topic, state string, active int) error {
