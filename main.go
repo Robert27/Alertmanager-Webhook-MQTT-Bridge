@@ -162,8 +162,8 @@ func connectMQTT(broker, clientID, username, password string) mqtt.Client {
 
 func highestSeverity(alerts []alert) (string, int) {
 	active := 0
-	highest := "ok"
-	highestRank := severityRank[highest]
+	highest := ""
+	highestRank := -1
 
 	for _, a := range alerts {
 		if a.Status != "firing" {
@@ -184,6 +184,10 @@ func highestSeverity(alerts []alert) (string, int) {
 			highestRank = rank
 			highest = severity
 		}
+	}
+
+	if active == 0 {
+		return "NONE", active
 	}
 
 	return strings.ToUpper(highest), active
